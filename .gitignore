@@ -1,0 +1,12 @@
+# 忽略本地配置
+.env
+
+# 忽略临时状态文件
+last_tweet.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# VSCode 设置（可选）
+.vscode/
