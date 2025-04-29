@@ -28,19 +28,28 @@ jobs:
 
     # 下载 last_tweet.json（如果存在）
     - name: Download last_tweet.json
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
       with:
         name: last_tweet
         path: ./  # 下载到当前目录
 
     # 运行监控脚本
     - name: Run monitor script
+      env:
+        TWITTER_USERNAME: ${{ secrets.TWITTER_USERNAME }}
+        TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+        EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+        FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+        FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+        FEISHU_USER_ID: ${{ secrets.FEISHU_USER_ID }}
       run: python monitor.py
 
     # 上传 last_tweet.json 文件
     - name: Upload last_tweet.json
       if: success()  # 如果脚本执行成功，则上传文件
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: last_tweet
         path: last_tweet.json
