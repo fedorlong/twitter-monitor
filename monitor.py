@@ -10,115 +10,118 @@ from dotenv import load_dotenv
 import time
 import datetime
 import pytz
+from supabase import create_client, Client
 
 # === Load .env ===
 load_dotenv()
 
 # === Config ===
-TWITTER_USERNAME = os.environ['TWITTER_USERNAME']
-LAST_TWEET_FILE = 'last_tweet.json'
+# TWITTER_USERNAME 现在从环境变量中读取并处理
+# LAST_TWEET_FILE 已移除
 # 设置监控时间范围（太平洋时间）
 MONITOR_START_HOUR = 7  # 早上7点开始
 MONITOR_END_HOUR = 11   # 早上11点结束
+# Supabase 配置
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_TABLE = "monitored_tweets" # Supabase 表名
+
+# === Supabase Client ===
+supabase: Client = None
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("Supabase client initialized successfully.")
+    else:
+        print("Error: SUPABASE_URL and SUPABASE_KEY must be set in environment variables.")
+        exit(1) # 如果 Supabase 配置不完整则退出
+except Exception as e:
+    print(f"Error initializing Supabase client: {e}")
+    exit(1)
 
 # === Helper: Get Latest Tweet (使用Twitter API) ===
-def get_latest_tweet_api():
+def get_latest_tweet_api(username): # 接受 username 参数
     try:
         import tweepy
-        
-        # Twitter API凭据
+
+        # Twitter API凭据 (从环境变量获取)
         api_key = os.environ.get('TWITTER_API_KEY')
         api_secret = os.environ.get('TWITTER_API_SECRET')
         access_token = os.environ.get('TWITTER_ACCESS_TOKEN')
         access_secret = os.environ.get('TWITTER_ACCESS_SECRET')
         bearer_token = os.environ.get('TWITTER_BEARER_TOKEN')
-        
-        # 检查是否有足够的凭据
+
+        print(f"Fetching latest tweet for: {username}...")
+
         # OAuth 1.0a (用户认证)
         if all([api_key, api_secret, access_token, access_secret]):
-            print("使用OAuth 1.0a认证方式...")
+            print("Using OAuth 1.0a authentication...")
             auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_secret)
             api = tweepy.API(auth)
-            
-            # 获取最新推文
-            tweets = api.user_timeline(screen_name=TWITTER_USERNAME, count=1, tweet_mode="extended")
+
+            tweets = api.user_timeline(screen_name=username, count=1, tweet_mode="extended")
             if tweets:
                 tweet = tweets[0]
                 tweet_id = tweet.id_str
-                tweet_url = f"https://x.com/{TWITTER_USERNAME}/status/{tweet_id}"
+                tweet_url = f"https://x.com/{username}/status/{tweet_id}"
                 tweet_text = tweet.full_text
                 created_at = tweet.created_at
-                print(f"成功获取到推文，发布时间: {created_at}")
-                print(f"推文内容: {tweet_text[:50]}..." if len(tweet_text) > 50 else f"推文内容: {tweet_text}")
+                print(f"Successfully fetched tweet (OAuth 1.0a), created at: {created_at}")
+                print(f"Tweet content: {tweet_text[:50]}..." if len(tweet_text) > 50 else f"Tweet content: {tweet_text}")
                 return {'id': tweet_id, 'url': tweet_url, 'text': tweet_text, 'created_at': str(created_at)}
-        
+
         # OAuth 2.0 (应用认证)
         elif bearer_token:
-            print("使用OAuth 2.0 Bearer Token认证方式...")
+            print("Using OAuth 2.0 Bearer Token authentication...")
             client = tweepy.Client(bearer_token=bearer_token)
-            
-            # 获取用户ID
-            user = client.get_user(username=TWITTER_USERNAME)
+
+            user = client.get_user(username=username)
             if not user or not user.data:
-                print(f"无法获取用户 {TWITTER_USERNAME} 的信息")
+                print(f"Could not get user info for {username}")
                 return None
-                
+
             user_id = user.data.id
-            
-            # 获取用户最新推文
             tweets = client.get_users_tweets(
-                id=user_id, 
-                max_results=5,
+                id=user_id,
+                max_results=5, # API v2 minimum is 5
                 tweet_fields=['created_at', 'text']
             )
-            
+
             if tweets and tweets.data:
                 tweet = tweets.data[0]
                 tweet_id = tweet.id
-                tweet_url = f"https://x.com/{TWITTER_USERNAME}/status/{tweet_id}"
+                tweet_url = f"https://x.com/{username}/status/{tweet_id}"
                 tweet_text = tweet.text
                 created_at = tweet.created_at
-                print(f"成功获取到推文，发布时间: {created_at}")
-                print(f"推文内容: {tweet_text[:50]}..." if len(tweet_text) > 50 else f"推文内容: {tweet_text}")
+                print(f"Successfully fetched tweet (OAuth 2.0), created at: {created_at}")
+                print(f"Tweet content: {tweet_text[:50]}..." if len(tweet_text) > 50 else f"Tweet content: {tweet_text}")
                 return {'id': str(tweet_id), 'url': tweet_url, 'text': tweet_text, 'created_at': str(created_at)}
             else:
-                print("未找到推文")
+                print(f"No tweets found for {username}")
+
         else:
-            print("缺少必要的Twitter API凭据")
-            print("请在.env文件中设置以下环境变量之一组合:")
-            print("选项1: TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET")
-            print("选项2: TWITTER_BEARER_TOKEN")
-            
+            print("Missing necessary Twitter API credentials.")
+            print("Please set either (TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET) or TWITTER_BEARER_TOKEN in .env")
+
         return None
     except Exception as e:
-        print(f"Twitter API请求失败: {e}")
+        print(f"Twitter API request failed for {username}: {e}")
         return None
 
-# === Helper: State ===
-def load_last_id():
-    if not os.path.exists(LAST_TWEET_FILE):
-        return None
-    with open(LAST_TWEET_FILE, 'r') as f:
-        return json.load(f)['id']
-
-def save_last_id(tweet_id):
-    with open(LAST_TWEET_FILE, 'w') as f:
-        json.dump({'id': tweet_id}, f)
+# === Helper: State (已移除 load_last_id 和 save_last_id) ===
 
 # === Send Email ===
-def send_email(tweet):
+def send_email(tweet, recipient_email, monitored_username): # 接受 recipient_email 和 monitored_username
     smtp_server = 'smtp.gmail.com'
     smtp_port = 587
     sender = os.environ['EMAIL_SENDER']
     password = os.environ['EMAIL_PASSWORD']
-    recipient = os.environ['EMAIL_RECIPIENT']
 
-    subject = f"Twitter 更新通知：{TWITTER_USERNAME} 发新推文"
-    
-    # 构建邮件内容，包含更多信息
+    subject = f"Twitter 更新通知：@{monitored_username} 发新推文" # 在主题中包含用户名
+
     if 'text' in tweet:
         body = f"""
-发现新推文：
+发现 @{monitored_username} 的新推文：
 
 内容: {tweet['text']}
 
@@ -127,21 +130,23 @@ def send_email(tweet):
 时间: {tweet.get('created_at', '未知')}
         """
     else:
-        body = f"发现新推文：{tweet['url']}"
+        body = f"发现 @{monitored_username} 的新推文：{tweet['url']}"
 
     msg = MIMEMultipart()
     msg['From'] = sender
-    msg['To'] = recipient
+    msg['To'] = recipient_email
     msg['Subject'] = Header(subject, 'utf-8')
     msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
-    server = smtplib.SMTP(smtp_server, smtp_port)
-    server.starttls()
-    server.login(sender, password)
-    server.send_message(msg)
-    server.quit()
-    
-    print(f"邮件已发送至 {recipient}")
+    try:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(sender, password)
+        server.send_message(msg)
+        server.quit()
+        print(f"Email sent successfully to {recipient_email} for @{monitored_username}")
+    except Exception as e:
+        print(f"Failed to send email to {recipient_email} for @{monitored_username}: {e}")
 
 # === Feishu Notification ===
 def get_tenant_access_token():
@@ -171,10 +176,10 @@ def get_tenant_access_token():
         print(f"获取tenant_access_token时出错: {e}")
         return None
 
-def build_message_content(tweet):
+def build_message_content(tweet, monitored_username): # 接受 monitored_username
     """构建飞书消息内容"""
     message_content = f"🔔 X(Twitter)更新提醒 🔔\n\n"
-    message_content += f"用户: @{TWITTER_USERNAME}\n\n"
+    message_content += f"用户: @{monitored_username}\n\n" # 使用传入的用户名
     
     if 'text' in tweet:
         message_content += f"内容: {tweet['text']}\n\n"
@@ -185,7 +190,7 @@ def build_message_content(tweet):
     message_content += f"链接: {tweet['url']}"
     return message_content
 
-def send_feishu_message(tenant_token, message_content):
+def send_feishu_message(tenant_token, message_content, feishu_user_id): # 接受 feishu_user_id
     """发送飞书消息并返回消息ID"""
     try:
         headers = {
@@ -193,184 +198,171 @@ def send_feishu_message(tenant_token, message_content):
             'Content-Type': 'application/json'
         }
         
-        # 消息发送参数
         message_data = {
-            "receive_id": os.environ['FEISHU_USER_ID'],
+            "receive_id": feishu_user_id, # 使用传入的用户ID
             "content": json.dumps({"text": message_content}),
             "msg_type": "text"
         }
         
-        # 发送消息
         send_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=user_id"
         send_response = requests.post(send_url, headers=headers, json=message_data)
         send_result = send_response.json()
         
-        print(f"飞书消息发送结果: 状态码={send_response.status_code}, 响应={send_result}")
+        print(f"Feishu message sent result: Status={send_response.status_code}, Response={send_result}")
         
-        # 检查消息是否发送成功
         if send_result.get('code') == 0 and 'data' in send_result and 'message_id' in send_result['data']:
             message_id = send_result['data']['message_id']
-            print(f"消息发送成功，message_id: {message_id}")
+            print(f"Message sent successfully, message_id: {message_id}")
+            # 返回 headers 以便后续加急使用
             return message_id, headers
         else:
-            print(f"发送消息失败: {send_result.get('msg', '未知错误')}")
+            print(f"Failed to send message: {send_result.get('msg', 'Unknown error')}")
             return None, None
     except Exception as e:
-        print(f"发送飞书消息时出错: {e}")
+        print(f"Error sending Feishu message: {e}")
         return None, None
 
-def send_urgent_phone_call(message_id, headers):
+def send_urgent_phone_call(message_id, headers, feishu_user_id): # 接受 feishu_user_id
     """发送电话加急通知"""
     try:
-        print("开始发送电话加急...")
+        print(f"Sending urgent phone call for message {message_id} to user {feishu_user_id}...")
         
-        # 电话加急API
         urgent_url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/urgent_phone?user_id_type=user_id"
         
-        # 电话加急参数
         urgent_data = {
-            "user_id_list": [os.environ['FEISHU_USER_ID']]
+            "user_id_list": [feishu_user_id] # 使用传入的用户ID
         }
         
-        # 发送电话加急请求
         urgent_response = requests.patch(urgent_url, headers=headers, json=urgent_data)
         
-        # 解析响应
         if urgent_response.text.strip():
             urgent_result = urgent_response.json()
-            
             if urgent_result.get('code') == 0:
-                print("电话加急发送成功!")
+                print("Urgent phone call sent successfully!")
                 return True
             else:
                 error_code = urgent_result.get('code')
-                error_msg = urgent_result.get('msg', '未知错误')
-                print(f"电话加急发送失败: code={error_code}, msg={error_msg}")
+                error_msg = urgent_result.get('msg', 'Unknown error')
+                print(f"Failed to send urgent phone call: code={error_code}, msg={error_msg}")
                 return False
+        else:
+            print("Urgent phone call response was empty.")
+            return False # 或者根据需要处理空响应
     except Exception as e:
-        print(f"发送电话加急时出错: {e}")
+        print(f"Error sending urgent phone call: {e}")
         return False
 
-def check_message_read_status(message_id, headers):
-    """检查消息是否已读"""
+def check_message_read_status(message_id, headers, feishu_user_id): # 接受 feishu_user_id
+    """检查消息是否已读 (特定用户)"""
     try:
-        # 使用正确的消息已读信息接口
+        # 注意：此接口可能仍需要确认是否能有效针对特定用户检查，文档似乎暗示返回所有已读用户
+        # 但我们简化逻辑，只检查数组是否为空
         status_url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/read_users?user_id_type=user_id"
-        status_response = requests.get(status_url, headers=headers)
+        params = {'user_id_type': 'user_id'} # 明确指定参数
+
+        status_response = requests.get(status_url, headers=headers, params=params) # 使用 params
         status_result = status_response.json()
-        
+
         if status_result.get('code') == 0:
-            # 根据飞书API文档，响应结构为：
-            # {
-            #   "code": 0,
-            #   "data": {
-            #     "has_more": false,
-            #     "items": [
-            #       {
-            #         "tenant_key": "126c64334e8fd75e",
-            #         "timestamp": "1745832642000",
-            #         "user_id": "c7f62292",
-            #         "user_id_type": "user_id"
-            #       }
-            #     ]
-            #   },
-            #   "msg": "success"
-            # }
-            
-            # 获取已读用户列表
             read_users = status_result.get('data', {}).get('items', [])
-            
-            # 简化逻辑：只要items数组长度大于0就表示已读
-            is_read = len(read_users) > 0
-            
+            # 简化逻辑：只要items数组长度大于0就表示目标用户可能已读 (因为我们只通知一个人)
+            # 更严谨的检查: is_read = any(user.get('user_id') == feishu_user_id for user in read_users)
+            is_read = len(read_users) > 0 # 保持简化逻辑
+
             if is_read:
-                # 获取第一个已读用户的时间戳
+                 # 获取第一个已读用户的时间戳 (假设就是我们的目标用户)
                 read_time = read_users[0].get('timestamp')
                 if read_time:
-                    # 将时间戳转换为可读格式
-                    read_time_ms = int(read_time)
-                    read_time_sec = read_time_ms / 1000
-                    read_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(read_time_sec))
-                    print(f"消息已被读取，读取时间: {read_time_str}")
+                    try:
+                        read_time_ms = int(read_time)
+                        read_time_sec = read_time_ms / 1000
+                        read_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(read_time_sec))
+                        print(f"Message read status check: Read (at {read_time_str})")
+                    except ValueError:
+                         print(f"Message read status check: Read (invalid timestamp: {read_time})")
                 else:
-                    print("消息已被读取")
+                    print("Message read status check: Read (timestamp missing)")
             else:
-                print("消息未被读取")
-                
+                print("Message read status check: Not read")
+
             return is_read
         else:
             error_code = status_result.get('code')
-            error_msg = status_result.get('msg', '未知错误')
-            print(f"检查消息状态失败: code={error_code}, msg={error_msg}")
-            return False
+            error_msg = status_result.get('msg', 'Unknown error')
+            print(f"Failed to check message read status: code={error_code}, msg={error_msg}")
+            return False # 失败时假定未读可能更安全
     except Exception as e:
-        print(f"检查消息状态时出错: {e}")
+        print(f"Error checking message read status: {e}")
         return False
 
-def retry_urgent_phone_call(message_id, headers, max_retries=2, wait_seconds=90):
+def retry_urgent_phone_call(message_id, headers, feishu_user_id, max_retries=2, wait_seconds=90): # 接受 feishu_user_id
     """重试发送电话加急通知"""
     retry_count = 0
     
     while retry_count < max_retries:
-        # 等待指定时间
-        print(f"等待{wait_seconds}秒后检查消息状态...")
+        print(f"Waiting {wait_seconds}s before checking read status (Retry {retry_count + 1}/{max_retries})...")
         time.sleep(wait_seconds)
-        
-        # 检查消息状态
-        is_read = check_message_read_status(message_id, headers)
-        
-        if not is_read:
-            print(f"消息仍未读，第{retry_count+1}次重试发送电话加急...")
-            
-            # 再次发送电话加急
-            success = send_urgent_phone_call(message_id, headers)
-            if not success:
-                print(f"第{retry_count+1}次电话加急发送失败")
-        else:
-            print("消息已被读取，无需再次发送电话加急")
-            break
-            
-        retry_count += 1
-    
-    if retry_count == max_retries and not is_read:
-        print(f"已达到最大重试次数({max_retries})，停止重试")
 
-def call_feishu(tweet):
+        is_read = check_message_read_status(message_id, headers, feishu_user_id)
+
+        if not is_read:
+            print(f"Message still unread, retrying urgent phone call (Retry {retry_count + 1})...")
+            success = send_urgent_phone_call(message_id, headers, feishu_user_id)
+            if not success:
+                print(f"Urgent phone call retry {retry_count + 1} failed.")
+            # 即使失败也继续尝试下一次，除非达到最大次数
+        else:
+            print("Message has been read, stopping urgent call retries.")
+            break # 已读，跳出循环
+
+        retry_count += 1
+
+    if retry_count == max_retries and not is_read:
+        print(f"Max retries ({max_retries}) reached, message still unread.")
+
+def call_feishu(tweet, feishu_user_id, monitored_username): # 接受 feishu_user_id 和 monitored_username
     """发送飞书通知的主函数"""
     try:
-        print("开始发送飞书通知...")
-        
+        print(f"Starting Feishu notification process for @{monitored_username} to user {feishu_user_id}...")
+
         # 1. 获取 tenant_access_token
         tenant_token = get_tenant_access_token()
         if not tenant_token:
+            print("Failed to get tenant_access_token, skipping Feishu notification.")
             return
             
         # 2. 构建消息内容
-        message_content = build_message_content(tweet)
+        message_content = build_message_content(tweet, monitored_username)
         
         # 3. 发送飞书消息
-        message_id, headers = send_feishu_message(tenant_token, message_content)
+        message_id, headers = send_feishu_message(tenant_token, message_content, feishu_user_id)
         if not message_id or not headers:
+            print("Failed to send initial Feishu message, skipping urgent calls.")
             return
             
         # 4. 发送电话加急
-        success = send_urgent_phone_call(message_id, headers)
+        success = send_urgent_phone_call(message_id, headers, feishu_user_id)
         if success:
             # 5. 重试发送电话加急
-            retry_urgent_phone_call(message_id, headers)
-            
-    except Exception as e:
-        print(f"飞书通知发送失败: {e}")
-        
-    print("飞书通知处理完成")
+            retry_urgent_phone_call(message_id, headers, feishu_user_id)
+        else:
+            print("Initial urgent phone call failed.")
 
-# === Mock Latest Tweet ===
-def mock_latest_tweet():
+    except Exception as e:
+        print(f"Feishu notification process failed: {e}")
+
+    print(f"Feishu notification process finished for @{monitored_username}.")
+
+# === Mock Latest Tweet (现在接受 username) ===
+def mock_latest_tweet(username):
+    # 可以根据 username 返回不同的模拟数据，或者保持通用
+    timestamp = time.time()
+    mock_id = str(int(timestamp * 1000))[-10:] # 简单的变化ID
     return {
-        'id': '1915121671251620265',
-        'url': 'https://x.com/sama/status/1915121671251620265',
-        'text': '@SelfMadeMastery super happy to hear it was helpfu... 他又发新的内容了', 
-        'created_at': '2025-04-23 19:12:42+00:00'
+        'id': f'mock_{username}_{mock_id}',
+        'url': f'https://x.com/{username}/status/mock_{mock_id}',
+        'text': f'This is a mock tweet for @{username} at {time.ctime(timestamp)}',
+        'created_at': str(datetime.datetime.fromtimestamp(timestamp, tz=pytz.utc))
     }
 
 # === Helper: Check if current time is within monitoring hours ===
@@ -387,42 +379,111 @@ def is_within_monitoring_hours():
     is_monitoring_time = MONITOR_START_HOUR <= current_hour < MONITOR_END_HOUR
     
     if is_monitoring_time:
-        print(f"当前太平洋时间: {pacific_time.strftime('%Y-%m-%d %H:%M:%S %Z')}，在监控时间范围内")
+        print(f"Current Pacific Time: {pacific_time.strftime('%Y-%m-%d %H:%M:%S %Z')} within monitoring hours ({MONITOR_START_HOUR}:00 - {MONITOR_END_HOUR}:00).")
     else:
-        print(f"当前太平洋时间: {pacific_time.strftime('%Y-%m-%d %H:%M:%S %Z')}，不在监控时间范围内")
+        print(f"Current Pacific Time: {pacific_time.strftime('%Y-%m-%d %H:%M:%S %Z')} outside monitoring hours.")
     
     return is_monitoring_time
 
 # === Main ===
 def main():
+    global supabase # 确保可以使用全局 supabase 客户端
+
+    if not supabase:
+        print("Supabase client is not initialized. Exiting.")
+        return
+
     try:
         # 检查当前时间是否在监控时间范围内
         if not is_within_monitoring_hours():
-            print("当前时间不在监控时间范围内，跳过执行")
+            print("Skipping execution due to time constraints.")
             return
-            
-        # 只使用Twitter API
-        latest = get_latest_tweet_api()
-        # latest = mock_latest_tweet()
-        
-        if not latest:
-            print("无法通过Twitter API获取推文信息")
+
+        # 从环境变量获取通知目标
+        recipient_email = os.environ.get('EMAIL_RECIPIENT')
+        feishu_user_id = os.environ.get('FEISHU_USER_ID') # 可能为 None
+
+        # 从环境变量获取并处理要监控的 Twitter 用户名
+        twitter_usernames_str = os.environ.get('TWITTER_USERNAME')
+        if not twitter_usernames_str:
+            print("Error: TWITTER_USERNAME environment variable is not set.")
             return
-            
-        last_id = load_last_id()
-        # 修复判断条件，当ID不同（有新推文）时才发送通知
-        if latest['id'] != last_id:
-            print(f"检测到新推文：{latest['url']}")
-            
-            # 取消注释下面的行来启用邮件和飞书通知
-            send_email(latest)
-            call_feishu(latest)
-            
-            save_last_id(latest['id'])
-        else:
-            print("无新推文")
+
+        usernames_list = [name.strip() for name in twitter_usernames_str.split(',') if name.strip()]
+        if not usernames_list:
+            print("Error: TWITTER_USERNAME environment variable is set but contains no valid usernames.")
+            return
+
+        # --- 修改点：只取第一个用户名进行监控 ---
+        username_to_monitor = usernames_list[0]
+        print(f"Monitoring only the first Twitter username: @{username_to_monitor}")
+        # -------------------------------------
+
+        if not recipient_email:
+            print("Warning: EMAIL_RECIPIENT environment variable is not set. Email notifications will be skipped.")
+
+        # --- 修改点：移除循环，直接处理第一个用户 ---
+        print(f"\n--- Processing @{username_to_monitor} ---")
+        try:
+            # 1. 从 Supabase 获取上次记录的 tweet ID
+            last_known_id = None
+            response = supabase.table(SUPABASE_TABLE).select("last_tweet_id").eq("twitter_username", username_to_monitor).execute()
+            if response.data:
+                last_known_id = response.data[0].get('last_tweet_id')
+                print(f"Last known tweet ID from Supabase for @{username_to_monitor}: {last_known_id}")
+            else:
+                print(f"No previous tweet ID found in Supabase for @{username_to_monitor}. Will notify on first found tweet.")
+
+            # 2. 获取最新的 tweet
+            # latest = mock_latest_tweet(username_to_monitor) # 使用 Mock 数据
+            latest = get_latest_tweet_api(username_to_monitor) # 使用真实 API
+
+            if not latest:
+                print(f"Could not fetch latest tweet for @{username_to_monitor}. Skipping.")
+                # 在这种单用户模式下，可以直接返回或记录错误后结束
+                return
+
+            new_tweet_id = latest['id']
+            print(f"Latest tweet ID fetched for @{username_to_monitor}: {new_tweet_id}")
+
+            # 3. 比较 ID 并发送通知
+            if new_tweet_id != last_known_id:
+                print(f"New tweet detected for @{username_to_monitor}! URL: {latest['url']}")
+
+                # 发送邮件通知 (如果配置了接收者)
+                if recipient_email:
+                    send_email(latest, recipient_email, username_to_monitor)
+                else:
+                    print("Skipping email notification as recipient email is not configured.")
+
+                # 发送飞书通知 (如果配置了飞书用户ID)
+                if feishu_user_id:
+                    call_feishu(latest, feishu_user_id, username_to_monitor)
+                else:
+                    print("Skipping Feishu notification as Feishu user ID is not configured.")
+
+                # 4. 更新 Supabase 中的 last_tweet_id
+                try:
+                    print(f"Updating last_tweet_id in Supabase for @{username_to_monitor} to {new_tweet_id}...")
+                    upsert_data = {'twitter_username': username_to_monitor, 'last_tweet_id': new_tweet_id}
+                    supabase.table(SUPABASE_TABLE).upsert(upsert_data).execute()
+                    print("Supabase update successful.")
+                except Exception as db_e:
+                    print(f"Error updating Supabase for @{username_to_monitor}: {db_e}")
+            else:
+                print(f"No new tweet found for @{username_to_monitor}.")
+
+        except Exception as user_e:
+            print(f"An error occurred while processing @{username_to_monitor}: {user_e}")
+            # 发生错误，记录日志
+
+        # --- 修改点：移除循环后的 sleep ---
+        # time.sleep(1) # 不再需要
+
+        print("\nMonitoring cycle finished (processed only the first user).")
+
     except Exception as e:
-        print(f"出错：{e}")
+        print(f"An unexpected error occurred in main execution: {e}")
 
 if __name__ == '__main__':
     main()
