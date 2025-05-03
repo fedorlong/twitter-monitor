@@ -25,6 +25,7 @@ MONITOR_END_HOUR = 11   # 早上11点结束
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 SUPABASE_TABLE = "monitored_tweets" # Supabase 表名
+SUPABASE_HISTORY_TABLE = "notification_history" # 通知历史记录表名
 
 # === Supabase Client ===
 supabase: Client = None
@@ -140,9 +141,13 @@ def send_email(tweet, recipient_email, monitored_username): # 接受 recipient_e
 
     try:
         server = smtplib.SMTP(smtp_server, smtp_port)
+        print(f"aaa")
         server.starttls()
+        print(f"bbb")
         server.login(sender, password)
+        print(f"ccc")
         server.send_message(msg)
+        print(f"ddd")
         server.quit()
         print(f"Email sent successfully to {recipient_email} for @{monitored_username}")
     except Exception as e:
@@ -359,10 +364,10 @@ def mock_latest_tweet(username):
     timestamp = time.time()
     mock_id = str(int(timestamp * 1000))[-10:] # 简单的变化ID
     return {
-        'id': f'mock_{username}_{mock_id}',
-        'url': f'https://x.com/{username}/status/mock_{mock_id}',
-        'text': f'This is a mock tweet for @{username} at {time.ctime(timestamp)}',
-        'created_at': str(datetime.datetime.fromtimestamp(timestamp, tz=pytz.utc))
+        'id': '1917291637962858735',
+        'url': 'https://x.com/sama/status/1917291637962858735',
+        'text': "we started rolling back the latest update to GPT-4o last night, it's now 100% rolled back for free users and we'll update again when it's finished for paid users, hopefully later today, we're working on additional fixes to model personality and will share more in the coming days",
+        'created_at': "2025-04-29 18:55:22+00:00"
     }
 
 # === Helper: Check if current time is within monitoring hours ===
@@ -384,6 +389,39 @@ def is_within_monitoring_hours():
         print(f"Current Pacific Time: {pacific_time.strftime('%Y-%m-%d %H:%M:%S %Z')} outside monitoring hours.")
     
     return is_monitoring_time
+
+# === 新增: 保存通知历史记录 ===
+def save_notification_history(email, username, tweet):
+    """将已发送的通知记录保存到 Supabase"""
+    try:
+        if not supabase:
+            print("Supabase client is not initialized. Cannot save notification history.")
+            return False
+            
+        # 创建要插入的数据
+        notification_data = {
+            'email': email,
+            'twitter_username': username,
+            'tweet_id': tweet.get('id', ''),
+            'tweet_url': tweet.get('url', ''),
+            'tweet_text': tweet.get('text', ''),
+            'tweet_created_at': tweet.get('created_at', ''),
+            # notified_at 字段由数据库默认值设置
+        }
+        
+        # 插入数据到 notification_history 表
+        print(f"Saving notification history for tweet {tweet.get('id', '')} sent to {email}...")
+        response = supabase.table(SUPABASE_HISTORY_TABLE).insert(notification_data).execute()
+        
+        if response.data:
+            print("Notification history saved successfully.")
+            return True
+        else:
+            print("Failed to save notification history.")
+            return False
+    except Exception as e:
+        print(f"Error saving notification history: {e}")
+        return False
 
 # === Main ===
 def main():
@@ -461,6 +499,10 @@ def main():
                     call_feishu(latest, feishu_user_id, username_to_monitor)
                 else:
                     print("Skipping Feishu notification as Feishu user ID is not configured.")
+                
+                # 保存通知历史记录 (如果发送了通知)
+                if recipient_email:
+                    save_notification_history(recipient_email, username_to_monitor, latest)
 
                 # 4. 更新 Supabase 中的 last_tweet_id
                 try:
